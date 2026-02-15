@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lineage Lite v1.0</title>
+    <title>Lineage Lite v1.1 - Snippets</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { margin: 0; overflow: hidden; background: #0f172a; color: white; font-family: sans-serif; }
@@ -72,7 +72,10 @@
             filter: drop-shadow(0 0 3px #6366f1); 
         }
         
-        #ctx-menu { position: fixed; z-index: 1000; background: #1e293b; border: 1px solid #475569; border-radius: 8px; display: none; padding: 4px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.5); }
+        #ctx-menu { position: fixed; z-index: 1000; background: #1e293b; border: 1px solid #475569; border-radius: 8px; display: none; padding: 4px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.5); min-width: 160px; }
+        #ctx-menu button { text-align: left; width: 100%; padding: 8px 12px; font-size: 13px; color: #e2e8f0; border-radius: 4px; }
+        #ctx-menu button:hover { background: #4f46e5; }
+        #ctx-menu hr { border-color: #334155; margin: 4px 0; }
         
         .legend-item { display: flex; justify-content: space-between; gap: 1rem; font-family: monospace; font-size: 10px; margin-bottom: 2px; }
         .legend-key { color: #818cf8; font-weight: bold; text-align: right; }
@@ -86,7 +89,7 @@
                 <h1 class="font-black text-indigo-400 text-sm tracking-tighter uppercase flex items-center gap-2">
                     Lineage <span class="text-white">Lite</span>
                 </h1>
-                <span class="text-[9px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full font-bold">v1.0</span>
+                <span class="text-[9px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full font-bold">v1.1</span>
             </div>
             
             <div class="space-y-1 opacity-80">
@@ -107,7 +110,10 @@
     </div>
 
     <div id="ctx-menu">
-        <button onclick="spawnAtLastCtx()" class="w-full text-left px-4 py-2 hover:bg-indigo-600 rounded text-sm font-bold transition">+ New Member Here</button>
+        <button onclick="spawnAtLastCtx()">+ New Member Here</button>
+        <hr>
+        <button id="btn-create-snippet" onclick="createSnippet()">Create Snippet</button>
+        <button onclick="openImportSnippet()">Import Snippet</button>
     </div>
 
     <div id="selection-box"></div>
@@ -175,6 +181,55 @@
         </div>
     </div>
 
+    <div id="snippetModal" class="fixed inset-0 bg-slate-950/90 backdrop-blur-sm hidden flex items-center justify-center z-[100] p-4">
+        <div class="bg-slate-800 border border-slate-700 rounded-xl p-6 max-w-lg w-full shadow-2xl">
+            <h3 class="text-xl font-bold mb-4">Snippet JSON</h3>
+            <textarea id="snippetOutput" readonly class="w-full bg-slate-900 p-3 rounded-lg border border-slate-700 h-32 outline-none font-mono text-xs mb-4"></textarea>
+            <div class="flex justify-end gap-2">
+                <button onclick="document.getElementById('snippetModal').classList.add('hidden')" class="px-4 py-2 text-sm text-slate-400 hover:text-white">Close</button>
+                <button onclick="copySnippet()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-500">Copy to Clipboard</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="importModal" class="fixed inset-0 bg-slate-950/90 backdrop-blur-sm hidden flex items-center justify-center z-[100] p-4">
+        <div class="bg-slate-800 border border-slate-700 rounded-xl p-6 max-w-lg w-full shadow-2xl">
+            <h3 class="text-xl font-bold mb-4">Import Snippet</h3>
+            <textarea id="importInput" placeholder="Paste JSON here..." class="w-full bg-slate-900 p-3 rounded-lg border border-slate-700 h-32 outline-none font-mono text-xs mb-4 focus:border-indigo-500"></textarea>
+            <div class="flex items-center gap-2 mb-4">
+                <input type="checkbox" id="keepIds" class="w-4 h-4 rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-indigo-500">
+                <label for="keepIds" class="text-sm text-slate-300">Keep original IDs (May cause conflicts)</label>
+            </div>
+            <div class="flex justify-end gap-2">
+                <button onclick="document.getElementById('importModal').classList.add('hidden')" class="px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
+                <button onclick="processImport()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-500">Import</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="conflictModal" class="fixed inset-0 bg-slate-950/90 backdrop-blur-sm hidden flex items-center justify-center z-[100] p-4">
+        <div class="bg-slate-800 border border-slate-700 rounded-xl p-6 max-w-3xl w-full shadow-2xl">
+            <h3 class="text-xl font-bold mb-2 text-yellow-500">ID Conflict Detected</h3>
+            <p class="text-slate-400 text-sm mb-6">The imported member has the same ID as an existing member. Click the card you want to keep.</p>
+            
+            <div class="flex gap-8 justify-center items-center mb-6">
+                <div class="flex flex-col items-center gap-2 cursor-pointer hover:scale-105 transition group" onclick="resolveConflict('existing')">
+                    <span class="text-xs font-bold text-slate-500 uppercase tracking-widest">Existing Member</span>
+                    <div id="conflictExisting" class="relative pointer-events-none transform scale-75 origin-top"></div>
+                    <button class="mt-2 bg-slate-700 group-hover:bg-slate-600 px-4 py-1 rounded text-xs">Keep Existing</button>
+                </div>
+                
+                <div class="text-2xl font-bold text-slate-600">VS</div>
+
+                <div class="flex flex-col items-center gap-2 cursor-pointer hover:scale-105 transition group" onclick="resolveConflict('imported')">
+                    <span class="text-xs font-bold text-indigo-400 uppercase tracking-widest">Imported Snippet</span>
+                    <div id="conflictImported" class="relative pointer-events-none transform scale-75 origin-top"></div>
+                    <button class="mt-2 bg-indigo-900 group-hover:bg-indigo-800 text-indigo-200 px-4 py-1 rounded text-xs">Overwrite with Import</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         let family = JSON.parse(localStorage.getItem('f_v24')) || [];
         let relStates = JSON.parse(localStorage.getItem('r_v24')) || {}; 
@@ -186,6 +241,10 @@
 
         let lastCtxPos = { x: 0, y: 0 };
         let scale = 1, x = 0, y = 0;
+
+        // Snippet & Import State
+        let pendingConflicts = [];
+        let currentImportData = null;
 
         const viewport = document.getElementById('viewport');
         const panner = document.getElementById('panner');
@@ -271,7 +330,14 @@
         window.oncontextmenu = (e) => {
             e.preventDefault();
             lastCtxPos = { x: (e.clientX - x)/scale, y: (e.clientY - y)/scale };
-            ctx.style.display = 'block'; ctx.style.left = e.clientX+'px'; ctx.style.top = e.clientY+'px';
+            
+            // Toggle Create Snippet button visibility based on selection
+            const btnCreateSnippet = document.getElementById('btn-create-snippet');
+            btnCreateSnippet.style.display = selectedMemberIds.size > 0 ? 'block' : 'none';
+
+            ctx.style.display = 'block'; 
+            ctx.style.left = e.clientX+'px'; 
+            ctx.style.top = e.clientY+'px';
         };
 
         let dragTarget = null, isPanning = false, isConnecting = false, isBoxSelecting = false;
@@ -410,7 +476,6 @@
                  render();
              }
              
-             // Require Alt for editing members as per request
              if(card && e.altKey) {
                 openModal(card.id.replace('card-',''));
              }
@@ -532,6 +597,206 @@
             ctx.style.display = 'none'; clearSelection(); selectedMemberIds.add(id);
             render(); openModal(id, true);
         }
+
+        /* --- Snippet Functionality --- */
+
+        function createSnippet() {
+            ctx.style.display = 'none';
+            if(selectedMemberIds.size === 0) return;
+
+            const subFamily = family.filter(m => selectedMemberIds.has(m.id));
+            
+            // Calculate center to normalize coordinates
+            const xs = subFamily.map(m => m.x);
+            const ys = subFamily.map(m => m.y);
+            const minX = Math.min(...xs);
+            const minY = Math.min(...ys);
+            
+            // Create normalized copy
+            const exportMembers = subFamily.map(m => ({
+                ...m,
+                x: m.x - minX,
+                y: m.y - minY
+            }));
+
+            // Filter relationships
+            const exportRelStates = {};
+            for (let key in relStates) {
+                const [p1, p2] = key.split('-');
+                if(selectedMemberIds.has(p1) && selectedMemberIds.has(p2)) {
+                    exportRelStates[key] = relStates[key];
+                }
+            }
+
+            const json = JSON.stringify({ members: exportMembers, rels: exportRelStates }, null, 2);
+            document.getElementById('snippetOutput').value = json;
+            document.getElementById('snippetModal').classList.remove('hidden');
+        }
+
+        function copySnippet() {
+            const ta = document.getElementById('snippetOutput');
+            ta.select();
+            navigator.clipboard.writeText(ta.value).then(() => {
+                document.getElementById('snippetModal').classList.add('hidden');
+            });
+        }
+
+        function openImportSnippet() {
+            ctx.style.display = 'none';
+            document.getElementById('importInput').value = '';
+            document.getElementById('importModal').classList.remove('hidden');
+            document.getElementById('importInput').focus();
+        }
+
+        function processImport() {
+            const raw = document.getElementById('importInput').value;
+            const keepIds = document.getElementById('keepIds').checked;
+            
+            try {
+                const data = JSON.parse(raw);
+                if(!data.members) throw new Error("Invalid Snippet");
+                
+                document.getElementById('importModal').classList.add('hidden');
+                
+                // Prep data with position offset
+                const offsetX = Math.round(lastCtxPos.x/20)*20;
+                const offsetY = Math.round(lastCtxPos.y/20)*20;
+
+                data.members.forEach(m => {
+                    m.x += offsetX;
+                    m.y += offsetY;
+                });
+
+                if(keepIds) {
+                    currentImportData = data;
+                    handleImportWithKeepIds();
+                } else {
+                    handleImportNewIds(data);
+                }
+
+            } catch(e) {
+                alert("Invalid JSON format");
+            }
+        }
+
+        function handleImportNewIds(data) {
+            saveState();
+            const idMap = new Map();
+            
+            // 1. Generate new IDs map
+            data.members.forEach(m => {
+                const newId = Math.random().toString(36).substring(2,6).toUpperCase();
+                idMap.set(m.id, newId);
+                m.id = newId; // Update member ID
+            });
+
+            // 2. Remap references inside members
+            data.members.forEach(m => {
+                m.partners = (m.partners || []).map(pid => idMap.get(pid)).filter(id => id);
+                m.parents = (m.parents || []).map(pid => idMap.get(pid)).filter(id => id);
+            });
+
+            // 3. Remap RelStates
+            const newRels = {};
+            for(let key in data.rels) {
+                const [p1, p2] = key.split('-');
+                const newP1 = idMap.get(p1);
+                const newP2 = idMap.get(p2);
+                if(newP1 && newP2) {
+                    newRels[[newP1, newP2].sort().join('-')] = data.rels[key];
+                }
+            }
+
+            // 4. Merge
+            family = [...family, ...data.members];
+            Object.assign(relStates, newRels);
+            
+            // 5. Select new
+            clearSelection();
+            idMap.forEach(v => selectedMemberIds.add(v));
+            render();
+        }
+
+        function handleImportWithKeepIds() {
+            pendingConflicts = [];
+            const safeMembers = [];
+            
+            currentImportData.members.forEach(m => {
+                const existing = family.find(ex => ex.id === m.id);
+                if(existing) {
+                    pendingConflicts.push({ imported: m, existing: existing });
+                } else {
+                    safeMembers.push(m);
+                }
+            });
+
+            // Add safe ones immediately
+            if(safeMembers.length > 0) {
+                saveState(); // Save before partial merge
+                family = [...family, ...safeMembers];
+            }
+
+            if(pendingConflicts.length > 0) {
+                processNextConflict();
+            } else {
+                finalizeImport(currentImportData.rels);
+            }
+        }
+
+        function processNextConflict() {
+            if(pendingConflicts.length === 0) {
+                document.getElementById('conflictModal').classList.add('hidden');
+                finalizeImport(currentImportData.rels);
+                return;
+            }
+
+            const conflict = pendingConflicts[0];
+            document.getElementById('conflictModal').classList.remove('hidden');
+
+            // Render Preview Cards
+            renderConflictCard(conflict.existing, 'conflictExisting', 'border-slate-500');
+            renderConflictCard(conflict.imported, 'conflictImported', 'border-indigo-500');
+        }
+
+        function renderConflictCard(data, containerId, borderClass) {
+            const div = document.getElementById(containerId);
+            div.innerHTML = `
+                <div class="bg-slate-800 border-2 ${borderClass} rounded-xl p-4 w-64 shadow-lg">
+                    <div class="text-[10px] text-slate-500 font-mono">#${data.id}</div>
+                    <h3 class="font-bold text-slate-100">${data.firstName || '?'} ${data.lastName || ''}</h3>
+                    <div class="text-[10px] text-slate-400 mt-1">${data.bio || 'No bio'}</div>
+                </div>
+            `;
+        }
+
+        function resolveConflict(choice) {
+            const conflict = pendingConflicts.shift();
+            
+            if(choice === 'imported') {
+                // Overwrite: Remove existing, add imported
+                family = family.filter(m => m.id !== conflict.existing.id);
+                family.push(conflict.imported);
+            }
+            // If choice is 'existing', we do nothing (existing stays in family, imported is dropped)
+            
+            processNextConflict();
+        }
+
+        function finalizeImport(importedRels) {
+            // Merge Relationships
+            if(importedRels) {
+                Object.assign(relStates, importedRels);
+            }
+            
+            // Select all IDs from the imported set
+            clearSelection();
+            currentImportData.members.forEach(m => selectedMemberIds.add(m.id));
+            
+            currentImportData = null;
+            render();
+        }
+
+        /* --- End Snippet Functionality --- */
 
         function downloadTree() {
             const blob = new Blob([JSON.stringify({family, relStates})], {type: 'application/json'});
