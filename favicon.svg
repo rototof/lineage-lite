@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- background -->
+  <rect width="100" height="100" rx="18" fill="#0f172a"/>
+
+  <!-- cosine (front first half, back second half) -->
+  <path d="
+    M50 10
+    C75 10, 75 30, 50 30
+    C25 30, 25 50, 50 50
+  "
+  fill="none"
+  stroke="#a78bfa"
+  stroke-width="10"
+  stroke-linecap="round"/>
+
+  <path d="
+    M50 50
+    C75 50, 75 70, 50 70
+    C25 70, 25 90, 50 90
+  "
+  fill="none"
+  stroke="#a78bfa"
+  stroke-width="10"
+  stroke-linecap="round"
+  opacity="0.35"/>
+
+  <!-- sine (phase shifted) -->
+  <path d="
+    M50 10
+    C25 10, 25 30, 50 30
+    C75 30, 75 50, 50 50
+  "
+  fill="none"
+  stroke="#38bdf8"
+  stroke-width="10"
+  stroke-linecap="round"
+  opacity="0.35"/>
+
+  <path d="
+    M50 50
+    C25 50, 25 70, 50 70
+    C75 70, 75 90, 50 90
+  "
+  fill="none"
+  stroke="#38bdf8"
+  stroke-width="10"
+  stroke-linecap="round"/>
+</svg>
