@@ -1,0 +1,826 @@
+/*
+ * assets/app.js
+ * Project: Lineage Lite
+ * Purpose: Main application JavaScript extracted from inline <script> in index.html.
+ * Structure: This file contains all UI logic, rendering, event handlers, and snippet/import utilities.
+ * Notes: Keep this file loaded with `defer` so DOM is ready when it runs.
+ */
+
+// -- State
+let family = JSON.parse(localStorage.getItem('f_v24')) || [];
+let relStates = JSON.parse(localStorage.getItem('r_v24')) || {};
+let history = [];
+
+let selectedMemberIds = new Set();
+let selectedRelId = null;
+let selectedChildId = null;
+
+let lastCtxPos = { x: 0, y: 0 };
+let scale = 1, x = 0, y = 0;
+
+// Snippet & Import State
+let pendingConflicts = [];
+let currentImportData = null;
+
+// -- Elements
+const viewport = document.getElementById('viewport');
+const panner = document.getElementById('panner');
+const svg = document.getElementById('svgLayer');
+const ctx = document.getElementById('ctx-menu');
+const selBox = document.getElementById('selection-box');
+
+// -- Utilities
+const saveState = () => {
+    history.push(JSON.stringify({f: family, r: relStates}));
+    if(history.length > 50) history.shift();
+    localStorage.setItem('f_v24', JSON.stringify(family));
+    localStorage.setItem('r_v24', JSON.stringify(relStates));
+};
+
+const undo = () => {
+    if(history.length < 2) return;
+    history.pop();
+    const last = JSON.parse(history[history.length - 1]);
+    family = last.f; relStates = last.r;
+    clearSelection();
+    render();
+};
+
+// -- Event wiring
+window.addEventListener('keydown', (e) => { 
+    if (e.altKey) viewport.classList.add('connection-mode');
+    if (e.ctrlKey && e.key === 'z') undo();
+    if (e.key === 'Delete' || e.key === 'Backspace') handleDeletion();
+});
+window.addEventListener('keyup', (e) => { if (!e.altKey) viewport.classList.remove('connection-mode'); });
+
+function clearSelection() { selectedMemberIds.clear(); selectedRelId = null; selectedChildId = null; }
+
+function handleDeletion() {
+    let changed = false;
+    if (selectedMemberIds.size > 0) {
+        saveState();
+        family = family.filter(m => !selectedMemberIds.has(m.id));
+        const removed = selectedMemberIds;
+        family.forEach(m => {
+            m.parents = (m.parents||[]).filter(pid => !removed.has(pid));
+            m.partners = (m.partners||[]).filter(pid => !removed.has(pid));
+        });
+        for(let key in relStates) {
+            const [p1, p2] = key.split('-');
+            if(removed.has(p1) || removed.has(p2)) delete relStates[key];
+        }
+        selectedMemberIds.clear(); changed = true;
+    }
+    if (selectedRelId) { if(!changed) saveState(); removeRelationship(selectedRelId); selectedRelId = null; changed = true; }
+    if (selectedChildId) { if(!changed) saveState(); const child = family.find(m => m.id === selectedChildId); if (child) child.parents = []; selectedChildId = null; changed = true; }
+    if (changed) render();
+}
+
+// -- View interactions (panning, selection, dragging, connecting)
+viewport.onwheel = (e) => {
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    const newScale = Math.min(Math.max(0.1, scale * factor), 3);
+    const rect = viewport.getBoundingClientRect();
+    const mX = e.clientX - rect.left, mY = e.clientY - rect.top;
+    x = mX - (mX - x) * (newScale / scale);
+    y = mY - (mY - y) * (newScale / scale);
+    scale = newScale; updateTransform();
+};
+
+window.oncontextmenu = (e) => {
+    e.preventDefault();
+    lastCtxPos = { x: (e.clientX - x)/scale, y: (e.clientY - y)/scale };
+    const btnCreateSnippet = document.getElementById('btn-create-snippet');
+    btnCreateSnippet.style.display = selectedMemberIds.size > 0 ? 'block' : 'none';
+    ctx.style.display = 'block'; ctx.style.left = e.clientX+'px'; ctx.style.top = e.clientY+'px';
+};
+
+let dragTarget = null, isPanning = false, isConnecting = false, isBoxSelecting = false;
+let connectOrigin = null, panStart, dragOffsets = new Map(), boxStart, dragHitTargets = [];
+
+window.onmousedown = (e) => {
+    if (ctx.style.display === 'block' && !ctx.contains(e.target)) ctx.style.display = 'none';
+    viewport.focus();
+    const card = e.target.closest('.card'); const relNode = e.target.closest('.rel-node'); const line = e.target.closest('.clickable-line');
+    if (e.button === 0 && !e.altKey && !isPanning) {
+        if (line) { clearSelection(); selectedChildId = line.dataset.childId; render(); return; }
+        if (relNode) { clearSelection(); selectedRelId = relNode.dataset.relId; render(); return; }
+        if (card) {
+            const id = card.id.replace('card-','');
+            if (e.ctrlKey) { if(selectedMemberIds.has(id)) selectedMemberIds.delete(id); else selectedMemberIds.add(id); }
+            else { if(!selectedMemberIds.has(id)) { clearSelection(); selectedMemberIds.add(id); } }
+            dragTarget = id; dragOffsets.clear(); selectedMemberIds.forEach(mid => { const p = family.find(m => m.id === mid); dragOffsets.set(mid, { x: e.clientX/scale - p.x, y: e.clientY/scale - p.y }); }); render(); return;
+        }
+        if (!card && !relNode && !line && !ctx.contains(e.target)) { clearSelection(); isBoxSelecting = true; boxStart = { x: e.clientX, y: e.clientY }; selBox.style.display = 'block'; selBox.style.left = e.clientX + 'px'; selBox.style.top = e.clientY + 'px'; selBox.style.width = '0px'; selBox.style.height = '0px'; render(); }
+    }
+    if(e.button === 1) { e.preventDefault(); isPanning = true; viewport.classList.add('panning'); panStart = { x: e.clientX - x, y: e.clientY - y }; return; }
+    if(e.altKey && (card || relNode)) { isConnecting = true; connectOrigin = card ? {type:'member', id:card.id.replace('card-','')} : {type:'rel', id:relNode.dataset.relId}; (card || relNode).classList.add('node-highlight'); dragHitTargets = []; document.querySelectorAll('.card').forEach(el => dragHitTargets.push({ type: 'member', id: el.id.replace('card-',''), el: el, rect: el.getBoundingClientRect() })); document.querySelectorAll('.rel-node').forEach(el => dragHitTargets.push({ type: 'rel', id: el.dataset.relId, el: el, rect: el.getBoundingClientRect() })); }
+};
+
+window.onmousemove = (e) => {
+    if(isPanning) { x = e.clientX - panStart.x; y = e.clientY - panStart.y; updateTransform(); }
+    if(isBoxSelecting) {
+        const left = Math.min(boxStart.x, e.clientX), top = Math.min(boxStart.y, e.clientY);
+        const width = Math.abs(boxStart.x - e.clientX), height = Math.abs(boxStart.y - e.clientY);
+        selBox.style.left = left + 'px'; selBox.style.top = top + 'px'; selBox.style.width = width + 'px'; selBox.style.height = height + 'px';
+        family.forEach(p => { const card = document.getElementById(`card-${p.id}`); if(!card) return; const r = card.getBoundingClientRect(); const inside = (r.left < left + width && r.left + r.width > left && r.top < top + height && r.top + r.height > top); if(inside) selectedMemberIds.add(p.id); else if(!e.ctrlKey) selectedMemberIds.delete(p.id); }); render();
+    }
+    if(isConnecting) { dragHitTargets.forEach(t => { if (connectOrigin.type === t.type && t.id === connectOrigin.id) return; t.el.classList.remove('node-highlight'); }); const hit = dragHitTargets.find(t => e.clientX >= t.rect.left && e.clientX <= t.rect.right && e.clientY >= t.rect.top && e.clientY <= t.rect.bottom); if (hit) { if (connectOrigin.type === hit.type && hit.id === connectOrigin.id) return; hit.el.classList.add('node-highlight'); } }
+    if(dragTarget) { selectedMemberIds.forEach(id => { const p = family.find(m => m.id === id), offset = dragOffsets.get(id); if(p && offset) { p.x = Math.round((e.clientX/scale - offset.x)/20)*20; p.y = Math.round((e.clientY/scale - offset.y)/20)*20; } }); render(); }
+};
+
+window.onmouseup = (e) => { if(isBoxSelecting) { selBox.style.display = 'none'; isBoxSelecting = false; } if(isConnecting) { const dropCard = e.target.closest('.card'), dropRel = e.target.closest('.rel-node'); document.querySelectorAll('.node-highlight').forEach(el => el.classList.remove('node-highlight')); if(dropCard || dropRel) handleConnect(connectOrigin, dropCard ? {type:'member', id:dropCard.id.replace('card-','')} : {type:'rel', id:dropRel.dataset.relId}); } if(dragTarget) saveState(); dragTarget = null; isConnecting = false; isPanning = false; viewport.classList.remove('panning'); dragHitTargets = []; };
+
+window.ondblclick = (e) => { const relNode = e.target.closest('.rel-node'); const card = e.target.closest('.card'); if(relNode) { saveState(); const pair = relNode.dataset.relId; relStates[pair] = relStates[pair] === 'partner' ? 'married' : 'partner'; render(); } if(card && e.altKey) { openModal(card.id.replace('card-','')); } };
+
+function handleConnect(o, t) { if(o.id === t.id || (o.type==='rel' && t.type==='rel')) return; saveState(); if(o.type === 'member' && t.type === 'member') { const p1 = family.find(m => m.id === o.id), p2 = family.find(m => m.id === t.id); const pairKey = [o.id, t.id].sort().join('-'); p1.partners = Array.from(new Set([...(p1.partners||[]), t.id])); p2.partners = Array.from(new Set([...(p2.partners||[]), o.id])); relStates[pairKey] = 'married'; } else { const mId = o.type === 'member' ? o.id : t.id; const rId = o.type === 'rel' ? o.id : t.id; family.find(m => m.id === mId).parents = rId.split('-'); } render(); }
+
+function removeRelationship(relId) { const [id1, id2] = relId.split('-'); const m1 = family.find(m => m.id === id1), m2 = family.find(m => m.id === id2); if(m1) m1.partners = m1.partners.filter(p => p !== id2); if(m2) m2.partners = m2.partners.filter(p => p !== id1); family.forEach(m => { if(m.parents?.includes(id1) && m.parents?.includes(id2)) m.parents = []; }); delete relStates[relId]; }
+
+function render() { const container = document.getElementById('treeContainer'); container.innerHTML = ''; family.forEach(p => { const card = document.createElement('div'); card.id = `card-${p.id}`; card.className = `card gender-${p.gender || 'unspecified'} ${selectedMemberIds.has(p.id) ? 'selected' : ''}`; card.style.left = p.x+'px'; card.style.top = p.y+'px'; card.innerHTML = `
+            <div class="flex justify-between items-start mb-1 text-[10px] text-slate-500 font-mono">
+                <span>#${p.id}</span>
+                ${p.nickName ? `<span class="text-indigo-400 font-bold uppercase tracking-tight">"${p.nickName}"</span>` : ''}
+            </div>
+            <h3 class="font-bold text-slate-100 text-sm truncate">${p.firstName || 'Unknown'} ${p.lastName || ''}</h3>
+            <div class="mt-1 text-[10px] text-slate-400 font-medium">${p.birthDate ? p.birthDate : '---'} ${p.birthPlace ? '• ' + p.birthPlace : ''}</div>
+        `; container.appendChild(card); }); drawLines(); }
+
+function drawLines() { svg.innerHTML = svg.innerHTML.split('</defs>')[0] + '</defs>'; document.querySelectorAll('.rel-node').forEach(n => n.remove()); const processedPairs = new Set(); family.forEach(p => { (p.partners||[]).forEach(pid => { const pair = [p.id, pid].sort().join('-'); if(!processedPairs.has(pair)) { const m1 = family.find(m => m.id === p.id), m2 = family.find(m => m.id === pid); if(m1 && m2) { drawLine(m1.x+128, m1.y+40, m2.x+128, m2.y+40, relStates[pair] === 'partner', selectedRelId === pair); createRelNode(m1, m2, pair); } processedPairs.add(pair); } }); if(p.parents?.length === 2) { const m1 = family.find(m => m.id === p.parents[0]), m2 = family.find(m => m.id === p.parents[1]); if(m1 && m2) { const startX = (m1.x + m2.x + 256) / 2, startY = (m1.y + m2.y + 80) / 2; drawCurve(startX, startY, p.x+128, p.y, p.id); } } }); }
+
+function createRelNode(p1, p2, pair) { const node = document.createElement('div'); node.className = `rel-node ${selectedRelId === pair ? 'selected' : ''}`; node.dataset.relId = pair; const cx = (p1.x + p2.x + 256) / 2, cy = (p1.y + p2.y + 80) / 2; node.style.left = (cx - 18)+'px'; node.style.top = (cy - 18)+'px'; node.innerHTML = relStates[pair] === 'partner' ? '❤️' : '💍'; panner.appendChild(node); }
+
+function drawLine(x1, y1, x2, y2, dash, isSelected) { const l = document.createElementNS("http://www.w3.org/2000/svg", "line"); l.setAttribute("x1", x1); l.setAttribute("y1", y1); l.setAttribute("x2", x2); l.setAttribute("y2", y2); l.setAttribute("stroke", isSelected ? "#6366f1" : "#4f46e5"); l.setAttribute("stroke-width", isSelected ? "4" : "3"); if(dash) l.setAttribute("stroke-dasharray", "5,5"); svg.appendChild(l); return l; }
+
+function drawCurve(x1, y1, x2, y2, childId) { const isSel = selectedChildId === childId; const p = document.createElementNS("http://www.w3.org/2000/svg", "path"); p.setAttribute("d", `M ${x1} ${y1} C ${x1} ${y1+(y2-y1)*0.5}, ${x2} ${y1+(y2-y1)*0.5}, ${x2} ${y2}`); p.setAttribute("stroke", isSel ? "#6366f1" : "#6366f1"); p.setAttribute("stroke-width", isSel ? "5" : "2"); p.setAttribute("fill", "none"); p.setAttribute("marker-end", isSel ? "url(#arrow-sel)" : "url(#arrow)"); p.setAttribute("class", `clickable-line ${isSel ? 'selected' : ''}`); p.dataset.childId = childId; svg.appendChild(p); return p; }
+
+function spawnAtLastCtx() { const id = Math.random().toString(36).substring(2,6).toUpperCase(); family.push({id: id, x: Math.round(lastCtxPos.x/20)*20, y: Math.round(lastCtxPos.y/20)*20, firstName: '', lastName: '', gender: 'unspecified', partners: [], parents: []}); ctx.style.display = 'none'; clearSelection(); selectedMemberIds.add(id); render(); openModal(id, true); }
+
+/* --- Snippet Functionality (create/copy/import/resolve) --- */
+function createSnippet() { ctx.style.display = 'none'; if(selectedMemberIds.size === 0) return; const subFamily = family.filter(m => selectedMemberIds.has(m.id)); const xs = subFamily.map(m => m.x); const ys = subFamily.map(m => m.y); const minX = Math.min(...xs); const minY = Math.min(...ys); const exportMembers = subFamily.map(m => ({ ...m, x: m.x - minX, y: m.y - minY })); const exportRelStates = {}; for (let key in relStates) { const [p1, p2] = key.split('-'); if(selectedMemberIds.has(p1) && selectedMemberIds.has(p2)) { exportRelStates[key] = relStates[key]; } } const json = JSON.stringify({ members: exportMembers, rels: exportRelStates }, null, 2); document.getElementById('snippetOutput').value = json; document.getElementById('snippetModal').classList.remove('hidden'); }
+
+function copySnippet() { const ta = document.getElementById('snippetOutput'); ta.select(); navigator.clipboard.writeText(ta.value).then(() => { document.getElementById('snippetModal').classList.add('hidden'); }); }
+
+function openImportSnippet() { ctx.style.display = 'none'; document.getElementById('importInput').value = ''; document.getElementById('importModal').classList.remove('hidden'); document.getElementById('importInput').focus(); }
+
+function processImport() { const raw = document.getElementById('importInput').value; const keepIds = document.getElementById('keepIds').checked; try { const data = JSON.parse(raw); if(!data.members) throw new Error("Invalid Snippet"); document.getElementById('importModal').classList.add('hidden'); const offsetX = Math.round(lastCtxPos.x/20)*20; const offsetY = Math.round(lastCtxPos.y/20)*20; data.members.forEach(m => { m.x += offsetX; m.y += offsetY; }); if(keepIds) { currentImportData = data; handleImportWithKeepIds(); } else { handleImportNewIds(data); } } catch(e) { alert("Invalid JSON format"); } }
+
+function handleImportNewIds(data) { saveState(); const idMap = new Map(); data.members.forEach(m => { const newId = Math.random().toString(36).substring(2,6).toUpperCase(); idMap.set(m.id, newId); m.id = newId; }); data.members.forEach(m => { m.partners = (m.partners || []).map(pid => idMap.get(pid)).filter(id => id); m.parents = (m.parents || []).map(pid => idMap.get(pid)).filter(id => id); }); const newRels = {}; for(let key in data.rels) { const [p1, p2] = key.split('-'); const newP1 = idMap.get(p1); const newP2 = idMap.get(p2); if(newP1 && newP2) { newRels[[newP1, newP2].sort().join('-')] = data.rels[key]; } } family = [...family, ...data.members]; Object.assign(relStates, newRels); clearSelection(); idMap.forEach(v => selectedMemberIds.add(v)); render(); }
+
+function handleImportWithKeepIds() { pendingConflicts = []; const safeMembers = []; currentImportData.members.forEach(m => { const existing = family.find(ex => ex.id === m.id); if(existing) { pendingConflicts.push({ imported: m, existing: existing }); } else { safeMembers.push(m); } }); if(safeMembers.length > 0) { saveState(); family = [...family, ...safeMembers]; } if(pendingConflicts.length > 0) { processNextConflict(); } else { finalizeImport(currentImportData.rels); } }
+
+function processNextConflict() { if(pendingConflicts.length === 0) { document.getElementById('conflictModal').classList.add('hidden'); finalizeImport(currentImportData.rels); return; } const conflict = pendingConflicts[0]; document.getElementById('conflictModal').classList.remove('hidden'); renderConflictCard(conflict.existing, 'conflictExisting', 'border-slate-500'); renderConflictCard(conflict.imported, 'conflictImported', 'border-indigo-500'); }
+
+function renderConflictCard(data, containerId, borderClass) { const div = document.getElementById(containerId); div.innerHTML = `
+        <div class="bg-slate-800 border-2 ${borderClass} rounded-xl p-4 w-64 shadow-lg">
+            <div class="text-[10px] text-slate-500 font-mono">#${data.id}</div>
+            <h3 class="font-bold text-slate-100">${data.firstName || '?'} ${data.lastName || ''}</h3>
+            <div class="text-[10px] text-slate-400 mt-1">${data.bio || 'No bio'}</div>
+        </div>
+    `; }
+
+function resolveConflict(choice) { const conflict = pendingConflicts.shift(); if(choice === 'imported') { family = family.filter(m => m.id !== conflict.existing.id); family.push(conflict.imported); } processNextConflict(); }
+
+function finalizeImport(importedRels) { if(importedRels) { Object.assign(relStates, importedRels); } clearSelection(); currentImportData.members.forEach(m => selectedMemberIds.add(m.id)); currentImportData = null; render(); }
+
+/* --- Misc helpers & form handling --- */
+function downloadTree() { const blob = new Blob([JSON.stringify({family, relStates})], {type: 'application/json'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `tree.json`; a.click(); }
+
+function loadTree(e) { const reader = new FileReader(); reader.onload = (ev) => { const data = JSON.parse(ev.target.result); family = data.family; relStates = data.relStates; saveState(); render(); centerGraph(); }; reader.readAsText(e.target.files[0]); }
+
+function updateTransform() { panner.style.transform = `translate(${x}px, ${y}px) scale(${scale})`; }
+
+function openModal(id, isNew = false) { const p = family.find(m => m.id === id); document.getElementById('memberForm').reset(); document.getElementById('editId').value = p.id; document.getElementById('isNew').value = isNew ? "true" : "false"; document.getElementById('displayId').innerText = p.id; ['firstName','lastName','maidenName','nickName','birthDate','birthPlace','bio','gender'].forEach(f => { document.getElementById(f).value = p[f] || (f === 'gender' ? 'unspecified' : ''); }); document.getElementById('modal').classList.remove('hidden'); }
+
+function cancelEditor() { const isNew = document.getElementById('isNew').value === "true"; if (isNew) family = family.filter(m => m.id !== document.getElementById('editId').value); document.getElementById('modal').classList.add('hidden'); render(); }
+
+document.getElementById('memberForm').onsubmit = (e) => { e.preventDefault(); saveState(); const p = family.find(m => m.id === document.getElementById('editId').value); ['firstName','lastName','maidenName','nickName','birthDate','birthPlace','bio', 'gender'].forEach(f => { p[f] = document.getElementById(f).value; }); document.getElementById('modal').classList.add('hidden'); render(); };
+
+function centerGraph() { if(!family.length) return; const minX = Math.min(...family.map(p => p.x)), maxX = Math.max(...family.map(p => p.x)); const minY = Math.min(...family.map(p => p.y)), maxY = Math.max(...family.map(p => p.y)); scale = 0.8; x = (window.innerWidth/2) - ((minX + maxX)/2 + 128) * scale; y = (window.innerHeight/2) - ((minY + maxY)/2 + 40) * scale; updateTransform(); }
+
+render(); saveState(); window.onload = centerGraph;
+let family = JSON.parse(localStorage.getItem('f_v24')) || [];
+let relStates = JSON.parse(localStorage.getItem('r_v24')) || {}; 
+let history = [];
+        
+let selectedMemberIds = new Set();
+let selectedRelId = null;
+let selectedChildId = null;
+
+let lastCtxPos = { x: 0, y: 0 };
+let scale = 1, x = 0, y = 0;
+
+// Snippet & Import State
+let pendingConflicts = [];
+let currentImportData = null;
+
+const viewport = document.getElementById('viewport');
+const panner = document.getElementById('panner');
+const svg = document.getElementById('svgLayer');
+const ctx = document.getElementById('ctx-menu');
+const selBox = document.getElementById('selection-box');
+
+const saveState = () => {
+    history.push(JSON.stringify({f: family, r: relStates}));
+    if(history.length > 50) history.shift();
+    localStorage.setItem('f_v24', JSON.stringify(family));
+    localStorage.setItem('r_v24', JSON.stringify(relStates));
+};
+
+const undo = () => {
+    if(history.length < 2) return;
+    history.pop();
+    const last = JSON.parse(history[history.length - 1]);
+    family = last.f; relStates = last.r;
+    clearSelection();
+    render();
+};
+
+window.addEventListener('keydown', (e) => { 
+    if (e.altKey) viewport.classList.add('connection-mode');
+    if (e.ctrlKey && e.key === 'z') undo();
+    if (e.key === 'Delete' || e.key === 'Backspace') handleDeletion();
+});
+
+window.addEventListener('keyup', (e) => { if (!e.altKey) viewport.classList.remove('connection-mode'); });
+
+function clearSelection() {
+    selectedMemberIds.clear();
+    selectedRelId = null;
+    selectedChildId = null;
+}
+
+function handleDeletion() {
+    let changed = false;
+    if (selectedMemberIds.size > 0) {
+        saveState();
+        family = family.filter(m => !selectedMemberIds.has(m.id));
+        const removed = selectedMemberIds;
+        family.forEach(m => {
+            m.parents = (m.parents||[]).filter(pid => !removed.has(pid));
+            m.partners = (m.partners||[]).filter(pid => !removed.has(pid));
+        });
+        for(let key in relStates) {
+            const [p1, p2] = key.split('-');
+            if(removed.has(p1) || removed.has(p2)) delete relStates[key];
+        }
+        selectedMemberIds.clear();
+        changed = true;
+    }
+    if (selectedRelId) {
+        if(!changed) saveState();
+        removeRelationship(selectedRelId);
+        selectedRelId = null;
+        changed = true;
+    }
+    if (selectedChildId) {
+        if(!changed) saveState();
+        const child = family.find(m => m.id === selectedChildId);
+        if (child) child.parents = [];
+        selectedChildId = null;
+        changed = true;
+    }
+    if (changed) render();
+}
+
+viewport.onwheel = (e) => {
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    const newScale = Math.min(Math.max(0.1, scale * factor), 3);
+    const rect = viewport.getBoundingClientRect();
+    const mX = e.clientX - rect.left, mY = e.clientY - rect.top;
+    x = mX - (mX - x) * (newScale / scale);
+    y = mY - (mY - y) * (newScale / scale);
+    scale = newScale;
+    updateTransform();
+};
+
+window.oncontextmenu = (e) => {
+    e.preventDefault();
+    lastCtxPos = { x: (e.clientX - x)/scale, y: (e.clientY - y)/scale };
+    
+    // Toggle Create Snippet button visibility based on selection
+    const btnCreateSnippet = document.getElementById('btn-create-snippet');
+    btnCreateSnippet.style.display = selectedMemberIds.size > 0 ? 'block' : 'none';
+
+    ctx.style.display = 'block'; 
+    ctx.style.left = e.clientX+'px'; 
+    ctx.style.top = e.clientY+'px';
+};
+
+let dragTarget = null, isPanning = false, isConnecting = false, isBoxSelecting = false;
+let connectOrigin = null, panStart, dragOffsets = new Map(), boxStart, dragHitTargets = [];
+
+window.onmousedown = (e) => {
+    if (ctx.style.display === 'block' && !ctx.contains(e.target)) ctx.style.display = 'none';
+    viewport.focus();
+
+    const card = e.target.closest('.card');
+    const relNode = e.target.closest('.rel-node');
+    const line = e.target.closest('.clickable-line');
+    
+    if (e.button === 0 && !e.altKey && !isPanning) {
+        if (line) {
+            clearSelection();
+            selectedChildId = line.dataset.childId;
+            render(); return;
+        }
+        if (relNode) {
+            clearSelection();
+            selectedRelId = relNode.dataset.relId;
+            render(); return;
+        }
+        if (card) {
+            const id = card.id.replace('card-','');
+            if (e.ctrlKey) {
+                if(selectedMemberIds.has(id)) selectedMemberIds.delete(id);
+                else selectedMemberIds.add(id);
+            } else {
+                if(!selectedMemberIds.has(id)) {
+                    clearSelection();
+                    selectedMemberIds.add(id);
+                }
+            }
+            dragTarget = id;
+            dragOffsets.clear();
+            selectedMemberIds.forEach(mid => {
+                const p = family.find(m => m.id === mid);
+                dragOffsets.set(mid, { x: e.clientX/scale - p.x, y: e.clientY/scale - p.y });
+            });
+            render(); return;
+        }
+        if (!card && !relNode && !line && !ctx.contains(e.target)) {
+            clearSelection();
+            isBoxSelecting = true;
+            boxStart = { x: e.clientX, y: e.clientY };
+            selBox.style.display = 'block';
+            selBox.style.left = e.clientX + 'px'; selBox.style.top = e.clientY + 'px';
+            selBox.style.width = '0px'; selBox.style.height = '0px';
+            render();
+        }
+    }
+
+    if(e.button === 1) {
+        e.preventDefault(); isPanning = true;
+        viewport.classList.add('panning');
+        panStart = { x: e.clientX - x, y: e.clientY - y };
+        return;
+    }
+
+    if(e.altKey && (card || relNode)) {
+        isConnecting = true;
+        connectOrigin = card ? {type:'member', id:card.id.replace('card-','')} : {type:'rel', id:relNode.dataset.relId};
+        (card || relNode).classList.add('node-highlight');
+        
+        dragHitTargets = [];
+        document.querySelectorAll('.card').forEach(el => dragHitTargets.push({ type: 'member', id: el.id.replace('card-',''), el: el, rect: el.getBoundingClientRect() }));
+        document.querySelectorAll('.rel-node').forEach(el => dragHitTargets.push({ type: 'rel', id: el.dataset.relId, el: el, rect: el.getBoundingClientRect() }));
+    } 
+};
+
+window.onmousemove = (e) => {
+    if(isPanning) { x = e.clientX - panStart.x; y = e.clientY - panStart.y; updateTransform(); }
+    
+    if(isBoxSelecting) {
+        const left = Math.min(boxStart.x, e.clientX), top = Math.min(boxStart.y, e.clientY);
+        const width = Math.abs(boxStart.x - e.clientX), height = Math.abs(boxStart.y - e.clientY);
+        selBox.style.left = left + 'px'; selBox.style.top = top + 'px';
+        selBox.style.width = width + 'px'; selBox.style.height = height + 'px';
+        family.forEach(p => {
+            const card = document.getElementById(`card-${p.id}`);
+            if(!card) return;
+            const r = card.getBoundingClientRect();
+            const inside = (r.left < left + width && r.left + r.width > left && r.top < top + height && r.top + r.height > top);
+            if(inside) selectedMemberIds.add(p.id); else if(!e.ctrlKey) selectedMemberIds.delete(p.id);
+        });
+        render();
+    }
+
+    if(isConnecting) {
+        dragHitTargets.forEach(t => {
+            if (connectOrigin.type === t.type && t.id === connectOrigin.id) return;
+            t.el.classList.remove('node-highlight');
+        });
+        const hit = dragHitTargets.find(t => e.clientX >= t.rect.left && e.clientX <= t.rect.right && e.clientY >= t.rect.top && e.clientY <= t.rect.bottom);
+        if (hit) {
+            if (connectOrigin.type === hit.type && hit.id === connectOrigin.id) return;
+            hit.el.classList.add('node-highlight');
+        }
+    }
+
+    if(dragTarget) {
+        selectedMemberIds.forEach(id => {
+            const p = family.find(m => m.id === id), offset = dragOffsets.get(id);
+            if(p && offset) {
+                p.x = Math.round((e.clientX/scale - offset.x)/20)*20;
+                p.y = Math.round((e.clientY/scale - offset.y)/20)*20;
+            }
+        });
+        render();
+    }
+};
+
+window.onmouseup = (e) => {
+    if(isBoxSelecting) { selBox.style.display = 'none'; isBoxSelecting = false; }
+    if(isConnecting) {
+        const dropCard = e.target.closest('.card'), dropRel = e.target.closest('.rel-node');
+        document.querySelectorAll('.node-highlight').forEach(el => el.classList.remove('node-highlight'));
+        if(dropCard || dropRel) handleConnect(connectOrigin, dropCard ? {type:'member', id:dropCard.id.replace('card-','')} : {type:'rel', id:dropRel.dataset.relId});
+    }
+    if(dragTarget) saveState();
+    dragTarget = null; isConnecting = false; isPanning = false;
+    viewport.classList.remove('panning');
+    dragHitTargets = [];
+};
+
+window.ondblclick = (e) => {
+     const relNode = e.target.closest('.rel-node');
+     const card = e.target.closest('.card');
+
+     if(relNode) {
+         saveState();
+         const pair = relNode.dataset.relId;
+         relStates[pair] = relStates[pair] === 'partner' ? 'married' : 'partner';
+         render();
+     }
+     
+     if(card && e.altKey) {
+        openModal(card.id.replace('card-',''));
+     }
+};
+
+function handleConnect(o, t) {
+    if(o.id === t.id || (o.type==='rel' && t.type==='rel')) return;
+    saveState();
+    if(o.type === 'member' && t.type === 'member') {
+        const p1 = family.find(m => m.id === o.id), p2 = family.find(m => m.id === t.id);
+        const pairKey = [o.id, t.id].sort().join('-');
+        p1.partners = Array.from(new Set([...(p1.partners||[]), t.id]));
+        p2.partners = Array.from(new Set([...(p2.partners||[]), o.id]));
+        relStates[pairKey] = 'married';
+    } else {
+        const mId = o.type === 'member' ? o.id : t.id;
+        const rId = o.type === 'rel' ? o.id : t.id;
+        family.find(m => m.id === mId).parents = rId.split('-');
+    }
+    render();
+}
+
+function removeRelationship(relId) {
+    const [id1, id2] = relId.split('-');
+    const m1 = family.find(m => m.id === id1), m2 = family.find(m => m.id === id2);
+    if(m1) m1.partners = m1.partners.filter(p => p !== id2);
+    if(m2) m2.partners = m2.partners.filter(p => p !== id1);
+    family.forEach(m => { if(m.parents?.includes(id1) && m.parents?.includes(id2)) m.parents = []; });
+    delete relStates[relId];
+}
+
+function render() {
+    const container = document.getElementById('treeContainer');
+    container.innerHTML = '';
+    family.forEach(p => {
+        const card = document.createElement('div');
+        card.id = `card-${p.id}`; 
+        card.className = `card gender-${p.gender || 'unspecified'} ${selectedMemberIds.has(p.id) ? 'selected' : ''}`;
+        card.style.left = p.x+'px'; card.style.top = p.y+'px';
+        
+        card.innerHTML = `
+            <div class="flex justify-between items-start mb-1 text-[10px] text-slate-500 font-mono">
+                <span>#${p.id}</span>
+                ${p.nickName ? `<span class="text-indigo-400 font-bold uppercase tracking-tight">"${p.nickName}"</span>` : ''}
+            </div>
+            <h3 class="font-bold text-slate-100 text-sm truncate">${p.firstName || 'Unknown'} ${p.lastName || ''}</h3>
+            <div class="mt-1 text-[10px] text-slate-400 font-medium">
+                ${p.birthDate ? p.birthDate : '---'} ${p.birthPlace ? '• ' + p.birthPlace : ''}
+            </div>
+        `;
+        container.appendChild(card);
+    });
+    drawLines();
+}
+
+function drawLines() {
+    svg.innerHTML = svg.innerHTML.split('</defs>')[0] + '</defs>';
+    document.querySelectorAll('.rel-node').forEach(n => n.remove());
+    const processedPairs = new Set();
+    
+    family.forEach(p => {
+        (p.partners||[]).forEach(pid => {
+            const pair = [p.id, pid].sort().join('-');
+            if(!processedPairs.has(pair)) {
+                const m1 = family.find(m => m.id === p.id), m2 = family.find(m => m.id === pid);
+                if(m1 && m2) {
+                    drawLine(m1.x+128, m1.y+40, m2.x+128, m2.y+40, relStates[pair] === 'partner', selectedRelId === pair);
+                    createRelNode(m1, m2, pair);
+                }
+                processedPairs.add(pair);
+            }
+        });
+
+        if(p.parents?.length === 2) {
+            const m1 = family.find(m => m.id === p.parents[0]), m2 = family.find(m => m.id === p.parents[1]);
+            if(m1 && m2) {
+                const startX = (m1.x + m2.x + 256) / 2, startY = (m1.y + m2.y + 80) / 2;
+                drawCurve(startX, startY, p.x+128, p.y, p.id);
+            }
+        }
+    });
+}
+
+function createRelNode(p1, p2, pair) {
+    const node = document.createElement('div');
+    node.className = `rel-node ${selectedRelId === pair ? 'selected' : ''}`; 
+    node.dataset.relId = pair;
+    const cx = (p1.x + p2.x + 256) / 2, cy = (p1.y + p2.y + 80) / 2;
+    node.style.left = (cx - 18)+'px'; node.style.top = (cy - 18)+'px';
+    node.innerHTML = relStates[pair] === 'partner' ? '❤️' : '💍';
+    panner.appendChild(node);
+}
+
+function drawLine(x1, y1, x2, y2, dash, isSelected) {
+    const l = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    l.setAttribute("x1", x1); l.setAttribute("y1", y1); l.setAttribute("x2", x2); l.setAttribute("y2", y2);
+    l.setAttribute("stroke", isSelected ? "#6366f1" : "#4f46e5"); 
+    l.setAttribute("stroke-width", isSelected ? "4" : "3");
+    if(dash) l.setAttribute("stroke-dasharray", "5,5");
+    svg.appendChild(l); return l;
+}
+
+function drawCurve(x1, y1, x2, y2, childId) {
+    const isSel = selectedChildId === childId;
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", `M ${x1} ${y1} C ${x1} ${y1+(y2-y1)*0.5}, ${x2} ${y1+(y2-y1)*0.5}, ${x2} ${y2}`);
+    p.setAttribute("stroke", isSel ? "#6366f1" : "#6366f1"); 
+    p.setAttribute("stroke-width", isSel ? "5" : "2");
+    p.setAttribute("fill", "none"); 
+    p.setAttribute("marker-end", isSel ? "url(#arrow-sel)" : "url(#arrow)");
+    p.setAttribute("class", `clickable-line ${isSel ? 'selected' : ''}`);
+    p.dataset.childId = childId;
+    svg.appendChild(p); return p;
+}
+
+function spawnAtLastCtx() {
+    const id = Math.random().toString(36).substring(2,6).toUpperCase();
+    family.push({id: id, x: Math.round(lastCtxPos.x/20)*20, y: Math.round(lastCtxPos.y/20)*20, firstName: '', lastName: '', gender: 'unspecified', partners: [], parents: []});
+    ctx.style.display = 'none'; clearSelection(); selectedMemberIds.add(id);
+    render(); openModal(id, true);
+}
+
+/* --- Snippet Functionality --- */
+
+function createSnippet() {
+    ctx.style.display = 'none';
+    if(selectedMemberIds.size === 0) return;
+
+    const subFamily = family.filter(m => selectedMemberIds.has(m.id));
+    
+    // Calculate center to normalize coordinates
+    const xs = subFamily.map(m => m.x);
+    const ys = subFamily.map(m => m.y);
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    
+    // Create normalized copy
+    const exportMembers = subFamily.map(m => ({
+        ...m,
+        x: m.x - minX,
+        y: m.y - minY
+    }));
+
+    // Filter relationships
+    const exportRelStates = {};
+    for (let key in relStates) {
+        const [p1, p2] = key.split('-');
+        if(selectedMemberIds.has(p1) && selectedMemberIds.has(p2)) {
+            exportRelStates[key] = relStates[key];
+        }
+    }
+
+    const json = JSON.stringify({ members: exportMembers, rels: exportRelStates }, null, 2);
+    document.getElementById('snippetOutput').value = json;
+    document.getElementById('snippetModal').classList.remove('hidden');
+}
+
+function copySnippet() {
+    const ta = document.getElementById('snippetOutput');
+    ta.select();
+    navigator.clipboard.writeText(ta.value).then(() => {
+        document.getElementById('snippetModal').classList.add('hidden');
+    });
+}
+
+function openImportSnippet() {
+    ctx.style.display = 'none';
+    document.getElementById('importInput').value = '';
+    document.getElementById('importModal').classList.remove('hidden');
+    document.getElementById('importInput').focus();
+}
+
+function processImport() {
+    const raw = document.getElementById('importInput').value;
+    const keepIds = document.getElementById('keepIds').checked;
+    
+    try {
+        const data = JSON.parse(raw);
+        if(!data.members) throw new Error("Invalid Snippet");
+        
+        document.getElementById('importModal').classList.add('hidden');
+        
+        // Prep data with position offset
+        const offsetX = Math.round(lastCtxPos.x/20)*20;
+        const offsetY = Math.round(lastCtxPos.y/20)*20;
+
+        data.members.forEach(m => {
+            m.x += offsetX;
+            m.y += offsetY;
+        });
+
+        if(keepIds) {
+            currentImportData = data;
+            handleImportWithKeepIds();
+        } else {
+            handleImportNewIds(data);
+        }
+
+    } catch(e) {
+        alert("Invalid JSON format");
+    }
+}
+
+function handleImportNewIds(data) {
+    saveState();
+    const idMap = new Map();
+    
+    // 1. Generate new IDs map
+    data.members.forEach(m => {
+        const newId = Math.random().toString(36).substring(2,6).toUpperCase();
+        idMap.set(m.id, newId);
+        m.id = newId; // Update member ID
+    });
+
+    // 2. Remap references inside members
+    data.members.forEach(m => {
+        m.partners = (m.partners || []).map(pid => idMap.get(pid)).filter(id => id);
+        m.parents = (m.parents || []).map(pid => idMap.get(pid)).filter(id => id);
+    });
+
+    // 3. Remap RelStates
+    const newRels = {};
+    for(let key in data.rels) {
+        const [p1, p2] = key.split('-');
+        const newP1 = idMap.get(p1);
+        const newP2 = idMap.get(p2);
+        if(newP1 && newP2) {
+            newRels[[newP1, newP2].sort().join('-')] = data.rels[key];
+        }
+    }
+
+    // 4. Merge
+    family = [...family, ...data.members];
+    Object.assign(relStates, newRels);
+    
+    // 5. Select new
+    clearSelection();
+    idMap.forEach(v => selectedMemberIds.add(v));
+    render();
+}
+
+function handleImportWithKeepIds() {
+    pendingConflicts = [];
+    const safeMembers = [];
+    
+    currentImportData.members.forEach(m => {
+        const existing = family.find(ex => ex.id === m.id);
+        if(existing) {
+            pendingConflicts.push({ imported: m, existing: existing });
+        } else {
+            safeMembers.push(m);
+        }
+    });
+
+    // Add safe ones immediately
+    if(safeMembers.length > 0) {
+        saveState(); // Save before partial merge
+        family = [...family, ...safeMembers];
+    }
+
+    if(pendingConflicts.length > 0) {
+        processNextConflict();
+    } else {
+        finalizeImport(currentImportData.rels);
+    }
+}
+
+function processNextConflict() {
+    if(pendingConflicts.length === 0) {
+        document.getElementById('conflictModal').classList.add('hidden');
+        finalizeImport(currentImportData.rels);
+        return;
+    }
+
+    const conflict = pendingConflicts[0];
+    document.getElementById('conflictModal').classList.remove('hidden');
+
+    // Render Preview Cards
+    renderConflictCard(conflict.existing, 'conflictExisting', 'border-slate-500');
+    renderConflictCard(conflict.imported, 'conflictImported', 'border-indigo-500');
+}
+
+function renderConflictCard(data, containerId, borderClass) {
+    const div = document.getElementById(containerId);
+    div.innerHTML = `
+        <div class="bg-slate-800 border-2 ${borderClass} rounded-xl p-4 w-64 shadow-lg">
+            <div class="text-[10px] text-slate-500 font-mono">#${data.id}</div>
+            <h3 class="font-bold text-slate-100">${data.firstName || '?'} ${data.lastName || ''}</h3>
+            <div class="text-[10px] text-slate-400 mt-1">${data.bio || 'No bio'}</div>
+        </div>
+    `;
+}
+
+function resolveConflict(choice) {
+    const conflict = pendingConflicts.shift();
+    
+    if(choice === 'imported') {
+        // Overwrite: Remove existing, add imported
+        family = family.filter(m => m.id !== conflict.existing.id);
+        family.push(conflict.imported);
+    }
+    // If choice is 'existing', we do nothing (existing stays in family, imported is dropped)
+    
+    processNextConflict();
+}
+
+function finalizeImport(importedRels) {
+    // Merge Relationships
+    if(importedRels) {
+        Object.assign(relStates, importedRels);
+    }
+    
+    // Select all IDs from the imported set
+    clearSelection();
+    currentImportData.members.forEach(m => selectedMemberIds.add(m.id));
+    
+    currentImportData = null;
+    render();
+}
+
+/* --- End Snippet Functionality --- */
+
+function downloadTree() {
+    const blob = new Blob([JSON.stringify({family, relStates})], {type: 'application/json'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `tree.json`; a.click();
+}
+
+function loadTree(e) {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+        const data = JSON.parse(ev.target.result);
+        family = data.family; relStates = data.relStates;
+        saveState(); render(); centerGraph();
+    };
+    reader.readAsText(e.target.files[0]);
+}
+
+function updateTransform() { panner.style.transform = `translate(${x}px, ${y}px) scale(${scale})`; }
+
+function openModal(id, isNew = false) {
+    const p = family.find(m => m.id === id);
+    document.getElementById('memberForm').reset();
+    document.getElementById('editId').value = p.id;
+    document.getElementById('isNew').value = isNew ? "true" : "false";
+    document.getElementById('displayId').innerText = p.id;
+    ['firstName','lastName','maidenName','nickName','birthDate','birthPlace','bio','gender'].forEach(f => {
+        document.getElementById(f).value = p[f] || (f === 'gender' ? 'unspecified' : '');
+    });
+    document.getElementById('modal').classList.remove('hidden');
+}
+
+function cancelEditor() { 
+    const isNew = document.getElementById('isNew').value === "true";
+    if (isNew) family = family.filter(m => m.id !== document.getElementById('editId').value);
+    document.getElementById('modal').classList.add('hidden'); render();
+}
+
+document.getElementById('memberForm').onsubmit = (e) => {
+    e.preventDefault(); saveState();
+    const p = family.find(m => m.id === document.getElementById('editId').value);
+    ['firstName','lastName','maidenName','nickName','birthDate','birthPlace','bio', 'gender'].forEach(f => {
+        p[f] = document.getElementById(f).value;
+    });
+    document.getElementById('modal').classList.add('hidden'); render();
+};
+
+function centerGraph() {
+    if(!family.length) return;
+    const minX = Math.min(...family.map(p => p.x)), maxX = Math.max(...family.map(p => p.x));
+    const minY = Math.min(...family.map(p => p.y)), maxY = Math.max(...family.map(p => p.y));
+    scale = 0.8;
+    x = (window.innerWidth/2) - ((minX + maxX)/2 + 128) * scale;
+    y = (window.innerHeight/2) - ((minY + maxY)/2 + 40) * scale;
+    updateTransform();
+}
+
+render(); saveState();
+window.onload = centerGraph;

@@ -1,0 +1,152 @@
+/*
+ * assets/styles.css
+ * Project: Lineage Lite
+ * Purpose: Application-specific CSS extracted from inline <style> in index.html.
+ * Notes: Keep this file after the Tailwind stylesheet so utility classes are available.
+ */
+
+/* Basic layout and canvas */
+body { margin: 0; overflow: hidden; background: #0f172a; color: white; font-family: sans-serif; }
+
+#viewport { 
+    width: 100vw; height: 100vh; cursor: grab; 
+    background: radial-gradient(#334155 1px, transparent 1px); 
+    background-size: 40px 40px; position: relative;
+    user-select: none; -webkit-user-select: none;
+    outline: none;
+}
+
+#viewport.panning { cursor: grabbing !important; }
+#viewport.connection-mode { cursor: crosshair !important; }
+
+#panner { transform-origin: 0 0; position: absolute; top: 0; left: 0; }
+
+/* Card Styles */
+.card { 
+    position: absolute; z-index: 20; cursor: move; 
+    background: #1e293b; border: 2px solid #334155; border-radius: 0.75rem; 
+    width: 16rem; padding: 1rem;
+    transition: box-shadow 0.1s, border-color 0.1s;
+    overflow: hidden;
+}
+
+/* Gender Accents */
+.card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 6px; }
+.gender-male::before { background: #3b82f6; }
+.gender-female::before { background: #ec4899; }
+.gender-other::before { background: #a855f7; }
+.gender-unspecified::before { background: #64748b; }
+
+.card.selected { border-color: #6366f1 !important; box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.4); z-index: 25; }
+.card.node-highlight { border-color: #fbbf24 !important; box-shadow: 0 0 15px #fbbf24; }
+
+/* Rel Node Styles */
+.rel-node { 
+    width: 36px; height: 36px; background: #1e293b; border: 2px solid #6366f1; 
+    border-radius: 50%; position: absolute; z-index: 30; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.1s;
+}
+.rel-node:hover { transform: scale(1.1); }
+.rel-node.selected { 
+    background: #312e81; border-color: #818cf8; 
+    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.4); 
+    transform: scale(1.1);
+}
+.rel-node.node-highlight { border-color: #fbbf24 !important; box-shadow: 0 0 15px #fbbf24; transform: scale(1.1); }
+
+#selection-box { position: fixed; border: 1px solid #6366f1; background: rgba(99, 102, 241, 0.1); pointer-events: none; display: none; z-index: 1000; }
+
+.canvas-svg { position: absolute; top: 0; left: 0; width: 20000px; height: 20000px; pointer-events: none; overflow: visible; }
+
+.clickable-line { pointer-events: stroke; cursor: pointer; transition: stroke 0.1s, stroke-width 0.1s; fill: none; }
+.clickable-line:hover { stroke: #818cf8; stroke-width: 4; }
+.clickable-line.selected { stroke: #6366f1 !important; stroke-width: 5 !important; filter: drop-shadow(0 0 3px #6366f1); }
+
+#ctx-menu { position: fixed; z-index: 1000; background: #1e293b; border: 1px solid #475569; border-radius: 8px; display: none; padding: 4px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.5); min-width: 160px; }
+#ctx-menu button { text-align: left; width: 100%; padding: 8px 12px; font-size: 13px; color: #e2e8f0; border-radius: 4px; }
+#ctx-menu button:hover { background: #4f46e5; }
+#ctx-menu hr { border-color: #334155; margin: 4px 0; }
+
+.legend-item { display: flex; justify-content: space-between; gap: 1rem; font-family: monospace; font-size: 10px; margin-bottom: 2px; }
+.legend-key { color: #818cf8; font-weight: bold; text-align: right; }
+
+@media (max-width: 640px) { .card { width: 14rem; } }
+body { margin: 0; overflow: hidden; background: #0f172a; color: white; font-family: sans-serif; }
+        
+#viewport { 
+    width: 100vw; height: 100vh; cursor: grab; 
+    background: radial-gradient(#334155 1px, transparent 1px); 
+    background-size: 40px 40px; position: relative;
+    user-select: none; -webkit-user-select: none;
+    outline: none;
+}
+        
+#viewport.panning { cursor: grabbing !important; }
+#viewport.connection-mode { cursor: crosshair !important; }
+        
+#panner { transform-origin: 0 0; position: absolute; top: 0; left: 0; }
+        
+/* Card Styles */
+.card { 
+    position: absolute; z-index: 20; cursor: move; 
+    background: #1e293b; border: 2px solid #334155; border-radius: 0.75rem; 
+    width: 16rem; padding: 1rem;
+    transition: box-shadow 0.1s, border-color 0.1s;
+    overflow: hidden;
+}
+/* Gender Accents */
+.card::before {
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 6px;
+}
+.gender-male::before { background: #3b82f6; }
+.gender-female::before { background: #ec4899; }
+.gender-other::before { background: #a855f7; }
+.gender-unspecified::before { background: #64748b; }
+
+.card.selected { border-color: #6366f1 !important; box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.4); z-index: 25; }
+.card.node-highlight { border-color: #fbbf24 !important; box-shadow: 0 0 15px #fbbf24; }
+
+/* Rel Node Styles */
+.rel-node { 
+    width: 36px; height: 36px; background: #1e293b; border: 2px solid #6366f1; 
+    border-radius: 50%; position: absolute; z-index: 30; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.1s;
+}
+.rel-node:hover { transform: scale(1.1); }
+.rel-node.selected { 
+    background: #312e81; border-color: #818cf8; 
+    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.4); 
+    transform: scale(1.1);
+}
+.rel-node.node-highlight { border-color: #fbbf24 !important; box-shadow: 0 0 15px #fbbf24; transform: scale(1.1); }
+        
+#selection-box { 
+    position: fixed; border: 1px solid #6366f1; background: rgba(99, 102, 241, 0.1); 
+    pointer-events: none; display: none; z-index: 1000;
+}
+
+.canvas-svg { position: absolute; top: 0; left: 0; width: 20000px; height: 20000px; pointer-events: none; overflow: visible; }
+        
+.clickable-line { 
+    pointer-events: stroke; cursor: pointer; transition: stroke 0.1s, stroke-width 0.1s; fill: none; 
+}
+.clickable-line:hover { stroke: #818cf8; stroke-width: 4; }
+.clickable-line.selected { 
+    stroke: #6366f1 !important; stroke-width: 5 !important; 
+    filter: drop-shadow(0 0 3px #6366f1); 
+}
+        
+#ctx-menu { position: fixed; z-index: 1000; background: #1e293b; border: 1px solid #475569; border-radius: 8px; display: none; padding: 4px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.5); min-width: 160px; }
+#ctx-menu button { text-align: left; width: 100%; padding: 8px 12px; font-size: 13px; color: #e2e8f0; border-radius: 4px; }
+#ctx-menu button:hover { background: #4f46e5; }
+#ctx-menu hr { border-color: #334155; margin: 4px 0; }
+        
+.legend-item { display: flex; justify-content: space-between; gap: 1rem; font-family: monospace; font-size: 10px; margin-bottom: 2px; }
+.legend-key { color: #818cf8; font-weight: bold; text-align: right; }
+
+/* small responsiveness tweaks */
+@media (max-width: 640px) {
+  .card { width: 14rem; }
+}
